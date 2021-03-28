@@ -10,8 +10,10 @@ export woker_containersDir="/var/lib/woker/containers" # Similar to /var/lib/doc
 ##################################################################################################
 function woker_init_host () {
     sudo apt update -y -qq
-    sudo apt install -y -qq debootstrap jq btrfs-progs curl iproute2 iptables libcgroup-dev cgroup-tools util-linux coreutils nginx 
+    sudo apt install -y -qq debootstrap jq btrfs-progs curl iproute2 iptables libcgroup-dev cgroup-tools util-linux coreutils nginx nodejs npm
 
+    # Install pm2 package to send processes to background
+    sudo npm i -g pm2
     # Check if woker workingDirs exist
         sudo mkdir -p /var/lib/woker/image
         sudo mkdir -p /var/lib/woker/containers
@@ -41,7 +43,7 @@ function woker_init_container () {
 
 sudo chroot $1 bash <<"EOT"
  apt update -y
- apt install -y debootstrap btrfs-progs curl iproute2 iptables util-linux coreutils nginx
+ apt install -y debootstrap btrfs-progs curl iproute2 iptables util-linux coreutils nginx ping 
  rm /var/www/html/index.nginx-debian.html
  echo "Welcome from Jail!" >> /var/www/html/index.html
 EOT
@@ -148,10 +150,10 @@ function woker_unshare () {
     echo $$ > /sys/fs/cgroup/memory/$2/cgroup.procs
     echo $$ > /sys/fs/cgroup/cpu/$2/cgroup.procs
 
-    mkfifo in
-    unshare -fmuip --mount-proc \
+    
+    pm2 start "unshare -fmuip --mount-proc \
                 --net=/var/run/netns/$2 \
-                chroot $1  /bin/sh -c "/bin/mount -t proc proc /proc && bash" < in &
+                chroot $1  /bin/sh -c '/bin/mount -t proc proc /proc && bash'" --name $2 
 }
 ##################################################################################################
 ##                                          WOKER RUN                                           ##
@@ -181,7 +183,7 @@ function woker_run () {
     # Retrieve the container's infos and save them in config.v2.json file
     cp ./config.v2.json.tpl $woker_containersDir/$uuid/config.v2.json
 
-    PID=$(jobs -l | cut -d' ' -f2)
+    PID=$(pidof -s unshare)
     
     echo "PID: $PID"
     sed -i "s/myContainerID/$uuid/g" $woker_containersDir/$uuid/config.v2.json
@@ -190,7 +192,7 @@ function woker_run () {
     cat $woker_containersDir/$uuid/config.v2.json
     echo "$container_name   $uuid" >> $woker_containersDir/list
     # Configure the container network
-    woker_container_net_config $uuid 
+    woker_container_net_config $uuid
 
 }
 
@@ -209,11 +211,8 @@ function woker_exec () {
      echo "Container's name"
      read NAME
      nsenter --pid=/proc/$CONPID/ns/pid \
-		unshare \
-			--fork \
-			--pid \
-			--net=/var/run/netns/$ID \
-			--mount-proc=$woker_containersDir/$ID/$NAME/proc \
+			--net=/proc/$CONPID/ns/net \
+			--mount=/proc/$CONPID/ns/mnt \
 			chroot $woker_containersDir/$ID/$NAME bash
 }
 
